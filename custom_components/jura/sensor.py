@@ -35,6 +35,9 @@ async def async_setup_entry(
         if product.get("@Active") != "false":
             entities.append(JuraProductCountSensor(device, product_name))
 
+    # Create alert sensors
+    entities.append(JuraAlertSensor(device))
+
     async_add_entities(entities)
 
     # Set up automatic refresh
@@ -44,8 +47,10 @@ async def async_setup_entry(
         """Refresh statistics regularly."""
         try:
             await device.read_statistics()
+            await device.read_alerts()
         except Exception as ex:
-            _LOGGER.error(f"Error refreshing statistics: {ex}")
+            # we log as info as this is expected if the device is off
+            _LOGGER.info(f"Error refreshing statistics: {ex}")
 
     # Schedule regular updates
     entry.async_on_unload(
@@ -125,3 +130,45 @@ class JuraProductCountSensor(JuraStatisticsSensor):
             "product_counts", {}).get(self.product_name, None)
         _LOGGER.debug(f"Product {self.product_name} count: {value}")
         return value
+
+
+class JuraAlertSensor(JuraEntity, SensorEntity):
+    """Sensor for machine alerts."""
+
+    _attr_icon = "mdi:alert"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["ok", "alert"]
+
+    def __init__(self, device):
+        """Initialize the sensor."""
+        super().__init__(device, "alerts")
+        self._attr_name = f"{device.name} Alerts"
+        self._attr_extra_state_attributes = {"active_alerts": []}
+
+        # Register for updates on alerts
+        device.register_alert_update(self.internal_update)
+
+    @property
+    def native_value(self) -> str:
+        """Return the state of the sensor."""
+        return self._get_value()
+
+    def _get_value(self) -> str:
+        """Get the alert status."""
+        active_alerts = []
+        # Filter out specific alert bits that we don't want to show
+        filtered_bits = {12, 13, 36, 37, 148, 149, 150, 151}
+        for bit, name in self.device.alerts.items():
+            if bit not in filtered_bits:
+                active_alerts.append({
+                    "bit": bit,
+                    "name": name
+                })
+        self._attr_extra_state_attributes["active_alerts"] = active_alerts
+        return "alert" if active_alerts else "ok"
+
+    def internal_update(self):
+        """Override parent method to ensure alerts are refreshed."""
+        _LOGGER.debug(f"Updating alert sensor {self._attr_name}")
+        if self.hass is not None:
+            self.async_write_ha_state()
