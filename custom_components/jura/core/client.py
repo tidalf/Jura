@@ -18,15 +18,15 @@ class UUIDs:
     """BLE characteristic UUIDs."""
 
     # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#bluetooth-characteristics
-    # Heartbeat
-    ABOUT_MACHINE = "5a401531-ab2e-2548-c435-08c300000710"
-
     # Start product
     START_PRODUCT = "5a401525-ab2e-2548-c435-08c300000710"
+    # Heartbeat
     P_MODE = "5a401529-ab2e-2548-c435-08c300000710"
     # Statistics
     STATS_COMMAND = "5a401533-ab2e-2548-c435-08c300000710"
     STATS_DATA = "5A401534-ab2e-2548-c435-08c300000710"
+    # Status
+    MACHINE_STATUS = "5a401524-ab2e-2548-c435-08c300000710"
 
 
 class Client:
@@ -91,10 +91,9 @@ class Client:
                             )
                         self.send_data = None
 
-                    # important dummy read for keep connection
+                    # important dummy write to keep the connection
                     # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#heartbeat
                     heartbeat = [0x00, 0x7F, 0x80]
-                    # if time.time() < self.send_time:
                     try:
                         await self.client.write_gatt_char(
                             UUIDs.P_MODE,
@@ -106,7 +105,6 @@ class Client:
                         # we log as info as this is expected if the device is off
                         _LOGGER.info("heartbeat error", exc_info=e)
 
-                    # asyncio.sleep(10) with cancel
                     self.ping_future = self.loop.create_future()
                     # 10 is too late, 9 is ok
                     self.loop.call_later(9, self.ping_future.cancel)
@@ -184,6 +182,33 @@ class Client:
         # Read statistics data
         # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#statistics-data
         return await self.read(UUIDs.STATS_DATA, decrypt=True)
+
+    async def read_machine_status(self) -> bytes | None:
+        """Read machine status from the device."""
+        _LOGGER.debug("Reading Jura machine status...")
+
+        # Wait for connection
+        if not self.client:
+            self.ping()
+            for _ in range(20):
+                if not self.client:
+                    await asyncio.sleep(1)
+                else:
+                    break
+            if not self.client:
+                _LOGGER.debug("Failed to establish connection")
+                return None
+
+        try:
+            data = await self.read(UUIDs.MACHINE_STATUS, decrypt=True)
+            if data:
+                _LOGGER.debug(f"Machine status data: {data}")
+                return data
+        except Exception as e:
+            _LOGGER.warning("Error reading machine status", exc_info=e)
+            return None
+
+        return None
 
 
 def encrypt(data: bytes, key: int) -> bytes:

@@ -37,8 +37,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             _LOGGER.error("Unsupported model: %s", *e.args)
             return
 
+        alerts = machine.get("alerts", [])
+
         devices[entry.entry_id] = device = Device(
-            entry.title, machine["model"], machine["products"], service_info.device, encryption_key
+            entry.title, machine["model"], machine["products"], service_info.device, encryption_key, alerts
         )
         device.update_ble(service_info.advertisement)
 

@@ -42,10 +42,12 @@ class Attribute(TypedDict, total=False):
 
 
 class Device:
-    def __init__(self, name: str, model: str, products: list, device: BLEDevice, encryption_key: int):
+    def __init__(self, name: str, model: str, products: list, device: BLEDevice, encryption_key: int, alerts: list = None):
         self.name = name
         self.model = model
         self.products = products
+        self.alert_names = alerts or []
+        _LOGGER.debug(f"Initializing Device with alerts: {self.alert_names}")
 
         self.client = Client(device, self.set_connected, encryption_key)
 
@@ -59,7 +61,9 @@ class Device:
         self.updates_connect: list = []
         self.updates_product: list = []
         self.updates_statistics = []
+        self.updates_alerts = []
         self.statistics = {"total_products": None, "product_counts": {}}
+        self.alerts = {}
 
     @property
     def mac(self) -> str:
@@ -266,6 +270,45 @@ class Device:
 
         return self.statistics
 
+    def register_alert_update(self, handler: Callable):
+        """Register a callback for alert updates."""
+        self.updates_alerts.append(handler)
+        # Trigger an immediate update for the new handler
+        if self.alerts:
+            handler()
+
+    async def read_alerts(self) -> dict:
+        """Read alerts from the machine."""
+
+        # Read machine status data from client
+        data = await self.client.read_machine_status()
+        if data is None:
+            _LOGGER.debug("Failed to read machine status data")
+            return self.alerts
+
+        # Process alert bits
+        alerts = {}
+        for i in range((len(data) - 1) * 8):
+            offset_abs = (i >> 3) + 1
+            offset_byte = 7 - (i & 0b111)
+            if (data[offset_abs] >> offset_byte) & 0b1:
+                if i < len(self.alert_names) and self.alert_names[i] is not None:
+                    alert_name = self.alert_names[i]
+                else:
+                    alert_name = f"Unknown Alert {i}"
+                alerts[i] = alert_name
+                _LOGGER.info(f"Alert active. Alert bit: {i} - {alert_name}")
+
+        # Save the alerts
+        self.alerts = alerts
+
+        # Notify all alert listeners
+        _LOGGER.debug(f"Notifying {len(self.updates_alerts)} alert listeners")
+        for handler in self.updates_alerts:
+            handler()
+
+        return self.alerts
+
 
 class EmptyModel(Exception):
     pass
@@ -301,7 +344,28 @@ def get_machine(adv: bytes) -> dict | None:
             raw = xmltodict.parse(xml.read())
             products = raw["JOE"]["PRODUCTS"]["PRODUCT"]
 
-    return {"model": items[1], "products": products}
+            # Extract alerts from XML
+            alerts = []
+            if "ALERTS" in raw["JOE"] and "ALERT" in raw["JOE"]["ALERTS"]:
+                alert_list = raw["JOE"]["ALERTS"]["ALERT"]
+                if not isinstance(alert_list, list):
+                    alert_list = [alert_list]
+
+                # Create a list with enough slots for all alerts
+                max_bit = max(int(alert.get('@Bit', 0))
+                              for alert in alert_list)
+                alerts = [None] * (max_bit + 1)
+
+                # Populate the alerts list
+                for alert in alert_list:
+                    bit = int(alert.get('@Bit', 0))
+                    alerts[bit] = alert.get('@Name')
+
+    return {
+        "model": items[1],
+        "products": products,
+        "alerts": alerts
+    }
 
 
 def get_options(products: list[dict]) -> dict[str, list]:
