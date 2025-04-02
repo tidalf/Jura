@@ -42,12 +42,12 @@ class Attribute(TypedDict, total=False):
 
 
 class Device:
-    def __init__(self, name: str, model: str, products: list, device: BLEDevice):
+    def __init__(self, name: str, model: str, products: list, device: BLEDevice, encryption_key: int):
         self.name = name
         self.model = model
         self.products = products
 
-        self.client = Client(device, self.set_connected)
+        self.client = Client(device, self.set_connected, encryption_key)
 
         self.connected = False
         self.conn_info = {"mac": device.address}
@@ -186,10 +186,9 @@ class Device:
             data[pos] = value
 
         # additional data (some unknown)
-        # data[0] = self.key
+        # data[0] = self.client.key
         # data[9] = 1
         # data[16] = 6
-
         # need to be set or the machine will go into a half broken state
         data[17] = self.client.key
 
@@ -232,6 +231,7 @@ class Device:
             _LOGGER.info(
                 "total 0 or too high, something's wrong, returning existing statistics")
             return self.statistics
+
         # get the names associated to the products counts
         product_counts = {}
         for i, count in enumerate(product_counts_array):

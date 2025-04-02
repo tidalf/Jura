@@ -10,7 +10,7 @@ from . import encryption
 
 _LOGGER = logging.getLogger(__name__)
 
-ACTIVE_TIME = 30
+ACTIVE_TIME = 120
 COMMAND_TIME = 15
 
 
@@ -23,24 +23,23 @@ class UUIDs:
 
     # Start product
     START_PRODUCT = "5a401525-ab2e-2548-c435-08c300000710"
-
+    P_MODE = "5a401529-ab2e-2548-c435-08c300000710"
     # Statistics
     STATS_COMMAND = "5a401533-ab2e-2548-c435-08c300000710"
     STATS_DATA = "5A401534-ab2e-2548-c435-08c300000710"
 
 
 class Client:
-    def __init__(self, device: BLEDevice, callback: Callable = None):
+    def __init__(self, device: BLEDevice, callback: Callable = None, encryption_key: int = None):
         self.device = device
         self.callback = callback
-
         self.client: BleakClient | None = None
         self.loop = asyncio.get_running_loop()
 
         self.ping_future: asyncio.Future | None = None
         self.ping_task: asyncio.Task | None = None
         self.ping_time = 0
-        self.key = None
+        self.key = encryption_key
         self.send_data = None
         self.send_time = 0
         self.send_uuid = None
@@ -83,13 +82,6 @@ class Client:
 
                 # heartbeat loop
                 while time.time() < self.ping_time:
-                    # important dummy read for keep connection
-                    data = await self.client.read_gatt_char(
-                        UUIDs.ABOUT_MACHINE
-                    )
-                    self.key = data[0]
-                    _LOGGER.debug(f"key: {self.key}")
-
                     if self.send_data:
                         if time.time() < self.send_time:
                             await self.client.write_gatt_char(
@@ -99,9 +91,24 @@ class Client:
                             )
                         self.send_data = None
 
+                    # important dummy read for keep connection
+                    # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#heartbeat
+                    heartbeat = [0x00, 0x7F, 0x80]
+                    # if time.time() < self.send_time:
+                    try:
+                        await self.client.write_gatt_char(
+                            UUIDs.P_MODE,
+                            data=encrypt(heartbeat, self.key),
+                            response=True,
+                        )
+                        _LOGGER.info("heartbeat sent")
+                    except Exception as e:
+                        _LOGGER.error("heartbeat error", exc_info=e)
+
                     # asyncio.sleep(10) with cancel
                     self.ping_future = self.loop.create_future()
-                    self.loop.call_later(10, self.ping_future.cancel)
+                    # 10 is too late, 9 is ok
+                    self.loop.call_later(9, self.ping_future.cancel)
                     try:
                         await self.ping_future
                     except asyncio.CancelledError:
@@ -153,7 +160,6 @@ class Client:
 
         # Wait for connection
         if not self.client:
-            _LOGGER.debug("Waiting for client connection...")
             for _ in range(timeout):
                 if not self.client:
                     await asyncio.sleep(1)
