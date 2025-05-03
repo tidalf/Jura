@@ -7,7 +7,7 @@ from zipfile import ZipFile
 import xmltodict
 from bleak import AdvertisementData, BLEDevice
 
-from .client import Client
+from .client import Client, UUIDs
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,8 +69,14 @@ class Device:
         self.updates_product: list = []
         self.updates_statistics = []
         self.updates_alerts = []
+        self.updates_maintenance = []
         self.statistics = {"total_products": None, "product_counts": {}}
         self.active_alerts = {}
+        self.maintenance = {"cleaning_percents": {}}
+        self.alerts = {}
+        
+        # Set maintenance types from XML - this is now a simple list of names
+        self.maintenance_types = maintenance_types or []
 
     @property
     def mac(self) -> str:
@@ -209,6 +215,11 @@ class Device:
         """Register a callback for statistics updates."""
         self.updates_statistics.append(handler)
 
+    # Add method to register maintenance updates
+    def register_maintenance_update(self, handler: Callable):
+        """Register a callback for maintenance updates."""
+        self.updates_maintenance.append(handler)
+
     async def read_statistics(self, force_update: bool = False):
         """Read statistics from the machine."""
 
@@ -280,6 +291,60 @@ class Device:
             handler()
 
         return self.statistics
+
+    async def read_maintenance_percents(self) -> dict:
+        """Read maintenance percentages from the machine."""
+        _LOGGER.debug("Reading Jura maintenance percentages...")
+        
+        # Check if we have maintenance types defined from XML
+        if not self.maintenance_types:
+            _LOGGER.debug("No maintenance types defined from XML, skipping maintenance read")
+            return self.maintenance
+        
+        # Log maintenance types for debugging
+        _LOGGER.debug(f"Maintenance types from XML: {self.maintenance_types}")
+        
+        # Read decrypted maintenance data from client
+        data = await self.client.read_maintenance_percents()
+        if data is None:
+            _LOGGER.debug("Failed to read maintenance percentage data")
+            return self.maintenance
+            
+        # Process maintenance percentages according to the reference script logic
+        cleaning_percents = {}
+        
+        # Log raw decrypted data for debugging
+        _LOGGER.debug(f"Decrypted maintenance data (decimal): {[b for b in data]}")
+        
+        # Iterate through the bytes, matching index to maintenance type list
+        for index, percent in enumerate(data):
+            if index < len(self.maintenance_types):
+                maint_type = self.maintenance_types[index]
+                
+                # Format the name nicely
+                name = ""
+                for j, char in enumerate(maint_type):
+                    if j > 0 and char.isupper() and not maint_type[j-1].isupper():
+                        name += " " + char
+                    else:
+                        name += char
+                
+                # Store the raw byte value directly as the percentage
+                cleaning_percents[name] = percent
+                _LOGGER.debug(f"Maintenance: {name} = {percent}% (from byte at index {index})")
+            else:
+                # Log unexpected extra bytes
+                 _LOGGER.debug(f"Extra maintenance byte at index {index} with value {percent}%")
+        
+        # Save the maintenance data
+        self.maintenance = {"cleaning_percents": cleaning_percents}
+        
+        # Notify all maintenance listeners
+        _LOGGER.debug(f"Notifying {len(self.updates_maintenance)} maintenance listeners about {len(cleaning_percents)} maintenance items")
+        for handler in self.updates_maintenance:
+            handler()
+            
+        return self.maintenance
 
     def register_alert_update(self, handler: Callable):
         """Register a callback for alert updates."""
@@ -357,9 +422,45 @@ def get_machine(adv: bytes) -> dict | None:
                 }
             except:
                 alerts = {}
+                    
+            # Extract maintenance types from XML
+            maintenance_types = []
+            try:
+                # Look for MAINTENANCEPAGE section which contains maintenance types
+                if "STATISTIC" in raw["JOE"] and "MAINTENANCEPAGE" in raw["JOE"]["STATISTIC"]:
+                    # Find the BANK with Maintenance Percent
+                    if "BANK" in raw["JOE"]["STATISTIC"]["MAINTENANCEPAGE"]:
+                        banks = raw["JOE"]["STATISTIC"]["MAINTENANCEPAGE"]["BANK"]
+                        # Convert to list if not already
+                        if not isinstance(banks, list):
+                            banks = [banks]
+                            
+                        # Find the bank with Maintenance Percent name
+                        percent_bank = None
+                        for bank in banks:
+                            if bank.get("@Name") == "Maintenance Percent":
+                                percent_bank = bank
+                                break
+                                
+                        if percent_bank and "TEXTITEM" in percent_bank:
+                            # Get the text items which define maintenance types
+                            items = percent_bank["TEXTITEM"]
+                            if not isinstance(items, list):
+                                items = [items]
+                                
+                            # Log the maintenance types found
+                            _LOGGER.debug(f"Found {len(items)} maintenance percent types: {[item.get('@Type') for item in items]}")
+                            
+                            # Create a list of maintenance types in the order they appear in the XML
+                            # This order is assumed to match the byte order in the BLE data
+                            maintenance_types = [item.get('@Type') for item in items if item.get('@Type')]
+                            
+                            _LOGGER.info(f"Found {len(maintenance_types)} maintenance types in XML: {maintenance_types}")
+            except Exception as e:
+                _LOGGER.error(f"Error extracting maintenance types from XML: {e}")
+                maintenance_types = []
 
-    # First byte is the encryption key
-    return {"model": items[1], "products": products, "alerts": alerts, "key": adv[0]}
+    return {"model": items[1], "products": products, "alerts": alerts, "key": adv[0], "maintenance_types": maintenance_types}
 
 
 def get_options(products: list[dict]) -> dict[str, list]:

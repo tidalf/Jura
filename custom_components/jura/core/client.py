@@ -172,7 +172,9 @@ class Client:
         # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#reading
         for _ in range(retries):
             status = await self.read(UUIDs.STATS_COMMAND)
-            if status and status[1] != 225:  # 225 means not ready
+            _LOGGER.info(f"stats 0:{status[0]} 1:{status[1]}")
+
+            if status and status[0] == 0x3d and status[1] == 0xe0:
                 break
             await asyncio.sleep(0.8)
         else:
@@ -209,6 +211,62 @@ class Client:
             return None
 
         return None
+
+    async def read_maintenance_percents(self, timeout: int = 20, retries: int = 30) -> bytes | None:
+        """Read maintenance percentages from the device."""
+        _LOGGER.debug("Reading Jura maintenance percentages...")
+
+        # Send maintenance percents request command
+        # Command for maintenance percentages is 00 08 01 00
+        command_bytes = [ 0x2A, 0x00, 0x08, 0x01, 0x00]
+        self.send(bytes(command_bytes), uuid=UUIDs.STATS_COMMAND)
+
+        # Wait for connection
+        if not self.client:
+            for _ in range(timeout):
+                if not self.client:
+                    await asyncio.sleep(1)
+                else:
+                    break
+            if not self.client:
+                _LOGGER.debug("Failed to establish connection")
+                return None
+
+        # Wait for data to be ready
+        for _ in range(retries):
+            status = await self.read(UUIDs.STATS_COMMAND)
+            # Ensure status is bytes and has at least 2 elements before checking status[1]
+            if status:
+              _LOGGER.info(f"maintenance 0:{status[0]} 1:{status[1]}")
+            if status and status[0] == 0x3d and status[1] == 0xe2:
+                _LOGGER.debug(f"Maintenance status ready: {status}")
+                break
+            elif status:
+                 _LOGGER.debug(f"Maintenance status not ready: {status}, retrying...")
+            else:
+                 _LOGGER.debug("Maintenance status read failed, retrying...")
+                 
+            await asyncio.sleep(0.8)
+        else:
+            _LOGGER.error("Device not ready for maintenance percentages reading after multiple retries")
+            return None
+
+        # Read maintenance data and decrypt it
+        raw_data = await self.read(UUIDs.STATS_DATA)
+        if not raw_data:
+            _LOGGER.debug("Failed to read raw maintenance data")
+            return None
+            
+        _LOGGER.info(f"Raw maintenance data: {raw_data} {raw_data[0]} {raw_data[1]} {raw_data[2]} {raw_data[3]}")
+        
+        # Decrypt the data
+        if self.key:
+            data = encryption.encdec(list(raw_data), self.key)
+            _LOGGER.info(f"decrypted maintenance data: {data[0]} {data[1]} {data[2]} {data[3]}")
+            return data
+        else:
+            _LOGGER.warning("No encryption key available for decryption")
+            return None
 
 
 def encrypt(data: bytes | list, key: int) -> bytes:

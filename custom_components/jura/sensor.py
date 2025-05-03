@@ -11,6 +11,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
@@ -37,6 +38,13 @@ async def async_setup_entry(
 
     # Create alert sensors
     entities.append(JuraAlertSensor(device))
+    
+    # Create maintenance percentage sensors
+    entities.append(JuraMaintenancePercentSensor(device))
+    
+    # Create individual maintenance percentage sensors - these will be populated later
+    # after the first data fetch
+    device.individual_maintenance_sensors = []
 
     async_add_entities(entities)
 
@@ -48,9 +56,28 @@ async def async_setup_entry(
         try:
             await device.read_statistics()
             await device.read_alerts()
+            await device.read_maintenance_percents()
+            
+            # Check if we need to create individual maintenance sensors
+            if device.maintenance.get("cleaning_percents") and not device.individual_maintenance_sensors:
+                _LOGGER.info("Creating individual maintenance sensors")
+                individual_sensors = []
+                for maint_type, value in device.maintenance.get("cleaning_percents", {}).items():
+                    # Skip creating sensors for maintenance types that don't have a proper name
+                    if not maint_type or maint_type.lower() == "unknown" or maint_type.lower() == "inconnu":
+                        _LOGGER.debug(f"Skipping unnamed maintenance type with value {value}")
+                        continue
+                    sensor = JuraIndividualMaintenancePercentSensor(device, maint_type)
+                    individual_sensors.append(sensor)
+                
+                if individual_sensors:
+                    device.individual_maintenance_sensors = individual_sensors
+                    async_add_entities(individual_sensors)
+                    _LOGGER.info(f"Added {len(individual_sensors)} individual maintenance sensors")
+                
         except Exception as ex:
             # we log as info as this is expected if the device is off
-            _LOGGER.info(f"Error refreshing statistics: {ex}")
+            _LOGGER.info(f"Error refreshing data: {ex}")
 
     # Schedule regular updates
     entry.async_on_unload(
@@ -166,5 +193,79 @@ class JuraAlertSensor(JuraEntity, SensorEntity):
     def internal_update(self):
         """Override parent method to ensure alerts are refreshed."""
         _LOGGER.debug(f"Updating alert sensor {self._attr_name}")
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+
+class JuraMaintenancePercentSensor(JuraEntity, SensorEntity):
+    """Sensor for machine maintenance percentage."""
+
+    _attr_icon = "mdi:wrench"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, device):
+        """Initialize the sensor."""
+        super().__init__(device, "maintenance_percents")
+        self._attr_name = f"{device.name} Maintenance Status"
+        
+        # Register for updates on maintenance percentages
+        device.register_maintenance_update(self.internal_update)
+        
+    @property
+    def native_value(self) -> Any:
+        """Return the state of the sensor."""
+        return self._get_value()
+
+    def _get_value(self) -> dict:
+        """Get all maintenance percentages."""
+        self._attr_extra_state_attributes = self.device.maintenance.get("cleaning_percents", {})
+        # Return the average of all percentages or None if no data
+        percentages = self._attr_extra_state_attributes.values()
+        if percentages:
+            avg = sum(percentages) / len(percentages)
+            return round(avg, 1)
+        return None
+        
+    def internal_update(self):
+        """Override parent method to ensure maintenance data is refreshed."""
+        _LOGGER.debug(f"Updating maintenance sensor {self._attr_name}")
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+
+class JuraIndividualMaintenancePercentSensor(JuraEntity, SensorEntity):
+    """Sensor for individual maintenance percentage."""
+
+    _attr_icon = "mdi:wrench"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "%"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, device, maint_type: str):
+        """Initialize the sensor."""
+        # Create a safe ID from the maintenance type
+        safe_id = maint_type.lower().replace(" ", "_").replace("-", "_")
+        super().__init__(device, f"maintenance_percents_{safe_id}")
+        self._attr_name = f"{device.name} {maint_type}"
+        self.maint_type = maint_type
+        
+        # Register for updates on maintenance percentages
+        device.register_maintenance_update(self.internal_update)
+        
+    @property
+    def native_value(self) -> Any:
+        """Return the state of the sensor."""
+        return self._get_value()
+
+    def _get_value(self) -> int:
+        """Get the maintenance percentage for the specified type."""
+        # Return the percentage for the specified type or None if no data
+        return self.device.maintenance.get("cleaning_percents", {}).get(self.maint_type, None)
+        
+    def internal_update(self):
+        """Override parent method to ensure maintenance data is refreshed."""
+        _LOGGER.debug(f"Updating maintenance sensor {self._attr_name}")
         if self.hass is not None:
             self.async_write_ha_state()
