@@ -43,6 +43,7 @@ class Client:
         self.send_data = None
         self.send_time = 0
         self.send_uuid = None
+        self.send_done: asyncio.Event | None = None
 
     def ping(self):
         self.ping_time = time.time() + ACTIVE_TIME
@@ -63,6 +64,7 @@ class Client:
         self.send_time = time.time() + COMMAND_TIME
         self.send_data = data
         self.send_uuid = uuid
+        self.send_done = asyncio.Event()
 
         # refresh ping time
         self.ping()
@@ -77,6 +79,7 @@ class Client:
                 self.client = await establish_connection(
                     BleakClient, self.device, self.device.address
                 )
+                _LOGGER.info("BLE connection established")
                 if self.callback:
                     self.callback(True)
 
@@ -90,6 +93,8 @@ class Client:
                                 response=True,
                             )
                         self.send_data = None
+                        if self.send_done:
+                            self.send_done.set()
 
                     # important dummy write to keep the connection
                     # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#heartbeat
@@ -128,6 +133,18 @@ class Client:
 
         self.ping_task = None
 
+    async def _wait_for_connection(self, timeout: int = 20) -> bool:
+        """Wait for BLE connection to be established."""
+        if self.client:
+            return True
+        self.ping()
+        for _ in range(timeout):
+            if self.client:
+                return True
+            await asyncio.sleep(1)
+        _LOGGER.debug("Failed to establish connection")
+        return False
+
     async def read(self, uuid: str, decrypt: bool = False):
         """Read data from a characteristic."""
         if not self.client:
@@ -157,22 +174,19 @@ class Client:
         command_bytes = [0x2A, 0x00, 0x01, 0xFF, 0xFF]
         self.send(bytes(command_bytes), uuid=UUIDs.STATS_COMMAND)
 
-        # Wait for connection
-        if not self.client:
-            for _ in range(timeout):
-                if not self.client:
-                    await asyncio.sleep(1)
-                else:
-                    break
-            if not self.client:
-                _LOGGER.debug("Failed to establish connection")
-                return None
+        if not await self._wait_for_connection(timeout):
+            return None
+
+        # Wait for command to be written by _ping_loop
+        if self.send_done:
+            await asyncio.wait_for(self.send_done.wait(), timeout=10)
 
         # Wait for statistics to be ready
         # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#reading
         for _ in range(retries):
             status = await self.read(UUIDs.STATS_COMMAND)
-            if status and status[1] != 225:  # 225 means not ready
+            _LOGGER.info(f"Stats status: {status[0]:#x} {status[1]:#x}" if status else "Stats status: None")
+            if status and status[0] == 0x3D and status[1] == 0xE0:
                 break
             await asyncio.sleep(0.8)
         else:
@@ -187,17 +201,8 @@ class Client:
         """Read machine status from the device."""
         _LOGGER.debug("Reading Jura machine status...")
 
-        # Wait for connection
-        if not self.client:
-            self.ping()
-            for _ in range(20):
-                if not self.client:
-                    await asyncio.sleep(1)
-                else:
-                    break
-            if not self.client:
-                _LOGGER.debug("Failed to establish connection")
-                return None
+        if not await self._wait_for_connection():
+            return None
 
         try:
             data = await self.read(UUIDs.MACHINE_STATUS, decrypt=True)
@@ -209,6 +214,36 @@ class Client:
             return None
 
         return None
+
+    async def read_maintenance_percents(
+        self, timeout: int = 20, retries: int = 30
+    ) -> bytes | None:
+        """Read maintenance percentages from the device."""
+        _LOGGER.debug("Reading Jura maintenance percentages...")
+
+        command_bytes = [0x2A, 0x00, 0x08, 0x01, 0x00]
+        self.send(bytes(command_bytes), uuid=UUIDs.STATS_COMMAND)
+
+        if not await self._wait_for_connection(timeout):
+            return None
+
+        # Wait for command to be written by _ping_loop
+        if self.send_done:
+            await asyncio.wait_for(self.send_done.wait(), timeout=10)
+
+        for _ in range(retries):
+            status = await self.read(UUIDs.STATS_COMMAND)
+            _LOGGER.info(f"Maintenance status: {status[0]:#x} {status[1]:#x}" if status else "Maintenance status: None")
+            if status and status[0] == 0x3D and status[1] == 0xE2:
+                break
+            await asyncio.sleep(0.8)
+        else:
+            _LOGGER.error("Device not ready for maintenance percentages reading")
+            return None
+
+        data = await self.read(UUIDs.STATS_DATA, decrypt=True)
+        _LOGGER.info(f"Maintenance raw data: {[b for b in data]}" if data else "Maintenance raw data: None")
+        return data
 
 
 def encrypt(data: bytes | list, key: int) -> bytes:
