@@ -21,6 +21,7 @@ async def async_setup_entry(
         [
             JuraMakeButton(device, "make"),
             JuraRefreshStatsButton(device),
+            JuraRefreshMaintenanceButton(device),
         ]
     )
 
@@ -59,3 +60,27 @@ class JuraRefreshStatsButton(JuraEntity, ButtonEntity):
             _LOGGER.info("Successfully refreshed Jura statistics and alerts")
         except Exception as e:
             _LOGGER.error(f"Error refreshing Jura statistics: {e}")
+
+
+class JuraRefreshMaintenanceButton(JuraEntity, ButtonEntity):
+    """Button to refresh maintenance percentages from the Jura machine."""
+
+    def __init__(self, device):
+        super().__init__(device, "refresh_maintenance")
+        self._attr_icon = "mdi:refresh"
+        self._attr_name = f"{device.name} Refresh Maintenance"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_available = True
+
+    def internal_update(self):
+        if self.hass:
+            self._async_write_ha_state()
+
+    async def async_press(self) -> None:
+        """Handle the button press."""
+        _LOGGER.info("Manually refreshing Jura maintenance percentages")
+        try:
+            await self.device.read_maintenance_percents()
+            _LOGGER.info("Successfully refreshed Jura maintenance percentages")
+        except Exception as e:
+            _LOGGER.error(f"Error refreshing Jura maintenance: {e}")

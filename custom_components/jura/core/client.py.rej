@@ -1,0 +1,17 @@
+@@ -95,15 +95,14 @@
+                         if self.send_done:
+                             self.send_done.set()
+ 
+-                    # important dummy write to keep the connection
++                    # Heartbeat to keep the connection alive, break on failure
+                     # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#heartbeat
+                     heartbeat = [0x00, 0x7F, 0x80]
+                     try:
+                         await self.client.write_gatt_char(
+                             UUIDs.P_MODE,
+                             data=encrypt(heartbeat, self.key),
+                             response=True,
+                         )
+                         _LOGGER.debug("heartbeat sent")
+                     except Exception as e:
+-                        # we log as info as this is expected if the device is off
