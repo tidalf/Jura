@@ -269,8 +269,9 @@ class Device:
             else:
                 _LOGGER.debug(f"No product found for code {i} with count {count}")
 
+        # Log the final counts at info log level
         for product, count in product_counts.items():
-            _LOGGER.debug(f"Product: {product}, Count: {count}")
+            _LOGGER.info(f"Product: {product}, Count: {count}")
 
         # Save the statistics
         self.statistics = {
@@ -305,7 +306,7 @@ class Device:
                 cleaning_percents[name] = percent
 
         for name, percent in cleaning_percents.items():
-            _LOGGER.debug(f"Maintenance: {name}, Percent: {percent}")
+            _LOGGER.info(f"Maintenance: {name}, Percent: {percent}")
 
         self.maintenance = {"cleaning_percents": cleaning_percents}
 

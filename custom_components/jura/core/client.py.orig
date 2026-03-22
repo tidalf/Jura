@@ -95,7 +95,7 @@ class Client:
                         if self.send_done:
                             self.send_done.set()
 
-                    # Heartbeat to keep the connection alive, break on failure
+                    # important dummy write to keep the connection
                     # https://github.com/Jutta-Proto/protocol-bt-cpp?tab=readme-ov-file#heartbeat
                     heartbeat = [0x00, 0x7F, 0x80]
                     try:
@@ -106,9 +106,8 @@ class Client:
                         )
                         _LOGGER.debug("heartbeat sent")
                     except Exception as e:
-                        # expected if the device is turning off
-                        _LOGGER.debug("heartbeat error", exc_info=e)
-                        break
+                        # we log as info as this is expected if the device is off
+                        _LOGGER.info("heartbeat error", exc_info=e)
 
                     self.ping_future = self.loop.create_future()
                     # 10 is too late, 9 is ok
