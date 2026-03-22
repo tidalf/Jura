@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TypedDict
@@ -50,6 +51,7 @@ class Device:
         alerts: dict[int, str],
         key: int,
         device: BLEDevice,
+        maintenance_types: list = None,
     ):
         self.name = name
         self.model = model
@@ -69,8 +71,11 @@ class Device:
         self.updates_product: list = []
         self.updates_statistics = []
         self.updates_alerts = []
+        self.updates_maintenance = []
         self.statistics = {"total_products": None, "product_counts": {}}
         self.active_alerts = {}
+        self.maintenance = {}
+        self.maintenance_types = maintenance_types or []
 
     @property
     def mac(self) -> str:
@@ -281,6 +286,32 @@ class Device:
 
         return self.statistics
 
+    def register_maintenance_update(self, handler: Callable):
+        """Register a callback for maintenance updates."""
+        self.updates_maintenance.append(handler)
+
+    async def read_maintenance_percents(self) -> dict:
+        """Read maintenance percentages from the machine."""
+        if not self.maintenance_types:
+            return self.maintenance
+
+        data = await self.client.read_maintenance_percents()
+        if data is None:
+            return self.maintenance
+
+        cleaning_percents = {}
+        for index, percent in enumerate(data):
+            if index < len(self.maintenance_types):
+                name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", self.maintenance_types[index])
+                cleaning_percents[name] = percent
+
+        self.maintenance = {"cleaning_percents": cleaning_percents}
+
+        for handler in self.updates_maintenance:
+            handler()
+
+        return self.maintenance
+
     def register_alert_update(self, handler: Callable):
         """Register a callback for alert updates."""
         self.updates_alerts.append(handler)
@@ -358,8 +389,32 @@ def get_machine(adv: bytes) -> dict | None:
             except:
                 alerts = {}
 
-    # First byte is the encryption key
-    return {"model": items[1], "products": products, "alerts": alerts, "key": adv[0]}
+            maintenance_types = []
+            try:
+                stat = raw["JOE"].get("STATISTIC", {})
+                mpage = stat.get("MAINTENANCEPAGE", {})
+                banks = mpage.get("BANK", [])
+                if not isinstance(banks, list):
+                    banks = [banks]
+                for bank in banks:
+                    if bank.get("@Name") == "Maintenance Percent":
+                        text_items = bank.get("TEXTITEM", [])
+                        if not isinstance(text_items, list):
+                            text_items = [text_items]
+                        maintenance_types = [
+                            i["@Type"] for i in text_items if i.get("@Type")
+                        ]
+                        break
+            except Exception as e:
+                _LOGGER.error(f"Error extracting maintenance types from XML: {e}")
+
+    return {
+        "model": items[1],
+        "products": products,
+        "alerts": alerts,
+        "key": adv[0],
+        "maintenance_types": maintenance_types,
+    }
 
 
 def get_options(products: list[dict]) -> dict[str, list]:
